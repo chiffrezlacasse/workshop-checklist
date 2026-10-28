@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Workshop Checklist</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --surface: #ffffff; --fg: #1d1f1c; --muted: #6b6f68;
+    --line: #dedcd3; --accent: #2f6b4f; --accent-fg: #ffffff; --danger: #a33a2a;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151714; --surface: #1e211d; --fg: #ecebe6; --muted: #9ba197;
+      --line: #2f332e; --accent: #7fc09c; --accent-fg: #10140f; --danger: #e08a7b; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-top: max(16px, env(safe-area-inset-top, 0px));
+    padding-bottom: 40px;
+  }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 24px 0 8px; }
+  button, input, textarea {
+    font: inherit; color: inherit; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--surface); padding: 10px 12px; max-width: 100%;
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row > input { flex: 1 1 200px; min-width: 0; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 10px;
+  }
+  .card .title { font-weight: 600; overflow-wrap: anywhere; }
+  .card .meta { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+  .card a { color: var(--accent); overflow-wrap: anywhere; }
+  .photos { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .photos img { width: 84px; height: 84px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .actions button { padding: 6px 10px; font-size: 14px; }
+  .muted { color: var(--muted); }
+  .error { color: var(--danger); margin: 8px 0; }
+  .hidden { display: none !important; }
+  textarea { width: 100%; min-height: 64px; }
+  .tabs { display: flex; gap: 8px; margin: 16px 0 4px; }
+  .tabs button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<!-- Settings -->
+<script>
+  // Set these two values before you use the page.
+  var AUTH_URL = "https://ep-misty-glade-b99zhj4w.neonauth.c-7.eu-central-1.aws.neon.tech/neondb/auth";
+  var DATA_URL = "https://ep-misty-glade-b99zhj4w.apirest.c-7.eu-central-1.aws.neon.tech/neondb/rest/v1";
+</script>
+
+<div id="signin" class="hidden">
+  <h1>Workshop Checklist</h1>
+  <p class="muted">Enter your email. You'll get a sign-in link.</p>
+  <form id="signinForm" class="row">
+    <input id="email" type="email" required autocomplete="email" placeholder="you@example.com">
+    <button class="primary" type="submit">Send link</button>
+  </form>
+  <p id="signinMsg" class="muted"></p>
+</div>
+
+<div id="app" class="hidden">
+  <div class="row" style="justify-content: space-between;">
+    <h1>Workshop Checklist</h1>
+    <button id="signout" type="button">Sign out</button>
+  </div>
+
+  <form id="addForm">
+    <textarea id="newText" required placeholder="What do you need?"></textarea>
+    <div class="row" style="margin-top:8px">
+      <input id="newUrl" type="url" placeholder="Link (optional)">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="primary" type="submit">Add item</button>
+    </div>
+  </form>
+
+  <div class="tabs">
+    <button type="button" id="tabOpen" aria-pressed="true">Open</button>
+    <button type="button" id="tabArchive" aria-pressed="false">Archive</button>
+  </div>
+  <div id="list"></div>
+  <p id="appError" class="error hidden"></p>
+</div>
+
+<script>
+(function () {
+  var token = null;
+  var tokenTimer = null;
+  var items = [];
+  var view = "open";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var show = function (el, on) { el.classList.toggle("hidden", !on); };
+  var esc = function (s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  };
+  var fail = function (msg) { var e = $("appError"); e.textContent = msg; show(e, !!msg); };
+
+  // ---- Auth ----
+  function sendLink(email) {
+    return fetch(AUTH_URL + "/sign-in/magic-link", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email, callbackURL: location.href.split("#")[0] })
+    });
+  }
+
+  function fetchToken() {
+    return fetch(AUTH_URL + "/token", { credentials: "include" })
+      .then(function (r) { if (!r.ok) throw new Error("no session"); return r.json(); })
+      .then(function (j) { token = j.token; return token; });
+  }
+
+  function startTokenRefresh() {
+    clearInterval(tokenTimer);
+    // Tokens last about 15 minutes, so refresh every 10
+    tokenTimer = setInterval(function () { fetchToken().catch(function () {}); }, 10 * 60 * 1000);
+  }
+
+  // ---- Data API (PostgREST-style REST, authenticated with the user's JWT) ----
+  function api(path, options) {
+    options = options || {};
+    var headers = { "Authorization": "Bearer " + token };
+    if (options.body !== undefined) headers["Content-Type"] = "application/json";
+    if (options.prefer) headers["Prefer"] = options.prefer;
+    return fetch(DATA_URL + path, {
+      method: options.method || "GET",
+      headers: headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined
+    }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error("Data error " + r.status + ": " + t); });
+      return r.status === 204 ? null : r.json();
+    });
+  }
+
+  function loadItems() {
+    return api("/items?select=*&order=created_at.desc").then(function (rows) {
+      items = rows || [];
+      return api("/photos?select=id,item_id,mime_type,data");
+    }).then(function (photos) {
+      items.forEach(function (it) {
+        it.photos = (photos || []).filter(function (p) { return p.item_id === it.id; });
+      });
+      render();
+    });
+  }
+
+  // ---- Rendering ----
+  function render() {
+    var list = $("list");
+    var shown = items.filter(function (it) { return view === "open" ? it.status === "open" : it.status === "ticked"; });
+    if (!shown.length) {
+      list.innerHTML = '<p class="muted">' + (view === "open" ? "Nothing open. Add an item above." : "The archive is empty.") + "</p>";
+      return;
+    }
+    list.innerHTML = shown.map(function (it) {
+      var photos = (it.photos || []).map(function (p) {
+        return '<img alt="Item photo" data-photo="' + esc(p.id) + '" src="">';
+      }).join("");
+      var link = it.url ? '<div class="meta"><a href="' + esc(it.url) + '" target="_blank" rel="noopener">' + esc(it.url) + "</a></div>" : "";
+      var notes = it.notes ? '<div class="meta">' + esc(it.notes) + "</div>" : "";
+      var toggle = it.status === "open"
+        ? '<button class="primary" data-act="tick" data-id="' + esc(it.id) + '">Tick</button>'
+        : '<button data-act="untick" data-id="' + esc(it.id) + '">Put back</button>';
+      return '<div class="card">' +
+        '<div class="title">' + esc(it.text) + "</div>" + notes + link +
+        '<div class="photos">' + photos + "</div>" +
+        '<div class="actions">' + toggle +
+        '<label class="row" style="gap:4px"><input type="file" accept="image/*" data-act="photo" data-id="' + esc(it.id) + '" style="max-width:180px;border:0;background:none;padding:0"></label>' +
+        '<button data-act="delete" data-id="' + esc(it.id) + '">Delete</button>' +
+        "</div></div>";
+    }).join("");
+    loadPhotoImages();
+  }
+
+  // bytea comes back from PostgREST as a "\x" hex string
+  function hexToBytes(hex) {
+    var s = hex.indexOf("\\x") === 0 ? hex.slice(2) : hex;
+    var out = new Uint8Array(s.length / 2);
+    for (var i = 0; i < out.length; i++) out[i] = parseInt(s.substr(i * 2, 2), 16);
+    return out;
+  }
+  function loadPhotoImages() {
+    items.forEach(function (it) {
+      (it.photos || []).forEach(function (p) {
+        var img = document.querySelector('img[data-photo="' + p.id + '"]');
+        if (!img) return;
+        var blob = new Blob([hexToBytes(p.data)], { type: p.mime_type });
+        img.src = URL.createObjectURL(blob);
+      });
+    });
+  }
+
+  function bytesToHex(buf) {
+    var b = new Uint8Array(buf), s = "\\x";
+    for (var i = 0; i < b.length; i++) s += ("0" + b[i].toString(16)).slice(-2);
+    return s;
+  }
+
+  // ---- Actions ----
+  $("addForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+    fail("");
+    api("/items", {
+      method: "POST", prefer: "return=minimal",
+      body: { text: $("newText").value.trim(), url: $("newUrl").value.trim() || null }
+    }).then(function () {
+      $("newText").value = ""; $("newUrl").value = "";
+      return loadItems();
+    }).catch(function (err) { fail(err.message); });
+  });
+
+  $("list").addEventListener("click", function (e) {
+    var b = e.target.closest("button[data-act]");
+    if (!b) return;
+    var id = b.getAttribute("data-id"), act = b.getAttribute("data-act");
+    var p;
+    if (act === "tick") p = api("/items?id=eq." + id, { method: "PATCH", prefer: "return=minimal", body: { status: "ticked", ticked_at: new Date().toISOString(), updated_at: new Date().toISOString() } });
+    if (act === "untick") p = api("/items?id=eq." + id, { method: "PATCH", prefer: "return=minimal", body: { status: "open", ticked_at: null, updated_at: new Date().toISOString() } });
+    if (act === "delete") {
+      if (!window.confirm || !confirm("Delete this item and its photos?")) return;
+      p = api("/items?id=eq." + id, { method: "DELETE", prefer: "return=minimal" });
+    }
+    if (!p) return;
+    p.then(loadItems).catch(function (err) { fail(err.message); });
+  });
+
+  $("list").addEventListener("change", function (e) {
+    var input = e.target;
+    if (input.getAttribute("data-act") !== "photo" || !input.files || !input.files[0]) return;
+    var file = input.files[0], id = input.getAttribute("data-id");
+    file.arrayBuffer().then(function (buf) {
+      return api("/photos", { method: "POST", prefer: "return=minimal", body: { item_id: id, mime_type: file.type || "image/jpeg", data: bytesToHex(buf) } });
+    }).then(loadItems).catch(function (err) { fail(err.message); });
+  });
+
+  $("tabOpen").addEventListener("click", function () { view = "open"; $("tabOpen").setAttribute("aria-pressed", "true"); $("tabArchive").setAttribute("aria-pressed", "false"); render(); });
+  $("tabArchive").addEventListener("click", function () { view = "archive"; $("tabArchive").setAttribute("aria-pressed", "true"); $("tabOpen").setAttribute("aria-pressed", "false"); render(); });
+
+  $("signout").addEventListener("click", function () {
+    fetch(AUTH_URL + "/sign-out", { method: "POST", credentials: "include" }).finally(function () { location.reload(); });
+  });
+
+  $("signinForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var msg = $("signinMsg");
+    msg.textContent = "Sending...";
+    sendLink($("email").value.trim()).then(function (r) {
+      if (!r.ok) throw new Error("Could not send the link (" + r.status + ").");
+      msg.textContent = "Check your email and open the sign-in link on this device.";
+    }).catch(function (err) { msg.textContent = err.message; });
+  });
+
+  // ---- Start ----
+  fetchToken().then(function () {
+    show($("app"), true);
+    startTokenRefresh();
+    return loadItems();
+  }).catch(function () {
+    show($("signin"), true);
+  });
+})();
+</script>
+</body>
+</html>
